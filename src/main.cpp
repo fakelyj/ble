@@ -57,6 +57,19 @@ void sendDownArrow() {
     inputReport->notify();
 }
 
+void sendUpArrow() {
+    if (!isEncrypted) return; // 加密未完成前，禁止发送
+    uint8_t pressMsg[8] = {0x00, 0x00, 0x52, 0x00, 0x00, 0x00, 0x00, 0x00};
+    inputReport->setValue(pressMsg, sizeof(pressMsg));
+    inputReport->notify();
+    
+    delay(80); 
+    
+    uint8_t releaseMsg[8] = {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
+    inputReport->setValue(releaseMsg, sizeof(releaseMsg));
+    inputReport->notify();
+}
+
 // 动作 B：下一首 (走多媒体通道，2字节)
 // 动作 B：发送空格键 (走普通键盘通道，8字节)
 void sendSpace() {
@@ -240,7 +253,10 @@ void loop() {
         static unsigned long lastDebounceTime = 0;
         
         static unsigned long pressStartTime = 0;
-        static bool longPressHandled = false;
+        
+        // 🚨 核心升级：区分 1 秒长按和 3 秒长按的标志位
+        static bool oneSecPressHandled = false;
+        static bool threeSecPressHandled = false;
 
         static int clickCount = 0;             
         static unsigned long firstClickTime = 0; 
@@ -256,11 +272,16 @@ void loop() {
             if (currentButtonState != stableButtonState) {
                 stableButtonState = currentButtonState;
                 
+                // --- 按下瞬间 ---
                 if (stableButtonState == LOW) { 
                     pressStartTime = millis();
-                    longPressHandled = false;
-                } else {
-                    if (pressStartTime > 0 && !longPressHandled) {
+                    oneSecPressHandled = false;   // 重置 1 秒标志
+                    threeSecPressHandled = false; // 重置 3 秒标志
+                } 
+                // --- 松开瞬间 ---
+                else {
+                    // 只有当 1 秒和 3 秒的长按都没有被触发过时，才判定为短按！
+                    if (pressStartTime > 0 && !oneSecPressHandled && !threeSecPressHandled) {
                         if (clickCount == 0) {
                             firstClickTime = millis();
                             clickCount = 1;
@@ -272,23 +293,31 @@ void loop() {
                 }
             }
 
-            // 长按 3 秒清空配对
+            // --- 保持按下状态：检测多级长按 ---
             if (stableButtonState == LOW && pressStartTime > 0) {
-                if ((millis() - pressStartTime > 3000) && !longPressHandled) {
+                unsigned long pressDuration = millis() - pressStartTime;
+
+                // 1. 先检测是否达到 1 秒
+                if (pressDuration > doubleClickWindow && !oneSecPressHandled) {
+                    Serial.println("👆 长按1秒触发 -> 方向上键 (Keyboard: 0x52)");
+                    sendUpArrow();
+                    oneSecPressHandled = true; // 标记 1 秒动作已执行
+                }
+                
+                // 2. 继续按压，检测是否达到 3 秒
+                if (pressDuration > 3000 && !threeSecPressHandled) {
                     clearAllBondedDevices();
-                    longPressHandled = true; 
+                    threeSecPressHandled = true; // 标记 3 秒动作已执行
                 }
             }
         }
         lastButtonState = currentButtonState;
 
-        // 执行短按与双击（只在加密链路通畅时执行）
-        // 执行短按与双击（只在加密链路通畅时执行）
+        // --- 执行短按与双击（只在加密链路通畅时执行） ---
         if (clickCount > 0 && pressStartTime == 0) {
             if (clickCount == 2) {
-                // 修改这里：打印提示并调用 sendSpace
                 Serial.println("👇 双击触发 -> 空格键 (Keyboard: 0x2C)");
-                sendSpace();
+                sendSpace(); // 调用你之前写的发空格函数
                 clickCount = 0; 
             } 
             else if (millis() - firstClickTime > doubleClickWindow) {
@@ -297,15 +326,5 @@ void loop() {
                 clickCount = 0; 
             }
         }
-    } else {
-        // 断线状态下依然允许长按重置
-        if (digitalRead(buttonPin) == LOW) {
-            delay(3000);
-            if (digitalRead(buttonPin) == LOW) {
-                clearAllBondedDevices();
-                while(digitalRead(buttonPin) == LOW) { delay(10); } 
-            }
-        }
     }
-    delay(10);
 }

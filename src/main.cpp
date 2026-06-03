@@ -8,216 +8,158 @@
 #include <nvs_flash.h>   
 #include <esp_gap_ble_api.h>
 
-const int buttonPin = 0; // ESP32-S3 板载 BOOT 按键
-
-// 状态机标志位
-bool isConnected = false; 
-bool isEncrypted = false; // 核心标志：加密链路是否已建立！
-
-BLEHIDDevice* hid = NULL;
-BLECharacteristic* inputReport = NULL;      // 通道 1：普通键盘 (8字节)
-BLECharacteristic* inputReportMedia = NULL; // 通道 2：多媒体 (2字节)
+// ==========================================
+// 引脚定义与配置
+// ==========================================
+const int buttonPin = 15; // 主按键: 3.3V NC端 (平时HIGH，按下变LOW)
+const int btnXPin = 1;    // 辅助键: 3.3V NO端 (平时LOW，按下变HIGH)
 
 // ==========================================
-// 1. 清空 Flash 中的配对记忆 (长按触发) - 修复版
+// 全局变量声明
+// ==========================================
+bool isConnected = false; 
+bool isEncrypted = false; 
+
+BLEHIDDevice* hid = NULL;
+BLECharacteristic* inputReport = NULL;      
+BLECharacteristic* inputReportMedia = NULL; 
+
+// ==========================================
+// 功能函数：清空蓝牙配对
 // ==========================================
 void clearAllBondedDevices() {
     int dev_num = esp_ble_get_bond_device_num();
     if (dev_num > 0) {
         esp_ble_bond_dev_t *dev_list = (esp_ble_bond_dev_t *)malloc(sizeof(esp_ble_bond_dev_t) * dev_num);
-        
-        // 修复 1：去掉了 _gap_，使用新版 API
         esp_ble_get_bond_device_list(&dev_num, dev_list);
-        
         for (int i = 0; i < dev_num; i++) {
-            // 修复 2：去掉了 _gap_，使用新版 API
             esp_ble_remove_bond_device(dev_list[i].bd_addr);
         }
         free(dev_list);
-        Serial.println("🧨 已彻底清空 Flash 中的所有蓝牙配对记录(LTK)！请在手机端取消配对后重连。");
+        Serial.println("🧨 已清空配对记录！请在手机取消配对后重连。");
     } else {
-        Serial.println("Flash 中目前没有配稳记录。");
+        Serial.println("Flash 中无记录。");
     }
 }
 
 // ==========================================
-// 2. 发送动作指令 (严格区分通道与字节长度)
+// 发送指令函数库 (走键盘通道，8字节)
 // ==========================================
-// 动作 A：方向下键 (走键盘通道，8字节)
 void sendDownArrow() {
-    if (!isEncrypted) return; // 加密未完成前，禁止发送
+    if (!isEncrypted) return; 
     uint8_t pressMsg[8] = {0x00, 0x00, 0x51, 0x00, 0x00, 0x00, 0x00, 0x00};
-    inputReport->setValue(pressMsg, sizeof(pressMsg));
-    inputReport->notify();
-    
+    inputReport->setValue(pressMsg, sizeof(pressMsg)); inputReport->notify();
     delay(80); 
-    
     uint8_t releaseMsg[8] = {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
-    inputReport->setValue(releaseMsg, sizeof(releaseMsg));
-    inputReport->notify();
+    inputReport->setValue(releaseMsg, sizeof(releaseMsg)); inputReport->notify();
 }
 
 void sendUpArrow() {
-    if (!isEncrypted) return; // 加密未完成前，禁止发送
-    uint8_t pressMsg[8] = {0x00, 0x00, 0x52, 0x00, 0x00, 0x00, 0x00, 0x00};
-    inputReport->setValue(pressMsg, sizeof(pressMsg));
-    inputReport->notify();
-    
-    delay(80); 
-    
-    uint8_t releaseMsg[8] = {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
-    inputReport->setValue(releaseMsg, sizeof(releaseMsg));
-    inputReport->notify();
-}
-
-// 动作 B：下一首 (走多媒体通道，2字节)
-// 动作 B：发送空格键 (走普通键盘通道，8字节)
-void sendSpace() {
     if (!isEncrypted) return; 
-    
-    // 0x2C 是空格键的 HID 码，放在第 3 个位置
-    uint8_t pressMsg[8] = {0x00, 0x00, 0x2C, 0x00, 0x00, 0x00, 0x00, 0x00};
-    
-    // ⚠️ 极其关键：因为是普通按键，必须使用 inputReport！绝不能用 inputReportMedia！
-    inputReport->setValue(pressMsg, sizeof(pressMsg));
-    inputReport->notify();
-    
+    uint8_t pressMsg[8] = {0x00, 0x00, 0x52, 0x00, 0x00, 0x00, 0x00, 0x00};
+    inputReport->setValue(pressMsg, sizeof(pressMsg)); inputReport->notify();
     delay(80); 
-    
-    // 释放信号全部置零
     uint8_t releaseMsg[8] = {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
-    inputReport->setValue(releaseMsg, sizeof(releaseMsg));
-    inputReport->notify();
+    inputReport->setValue(releaseMsg, sizeof(releaseMsg)); inputReport->notify();
+}
 
+// 新增：发送方向右键 (0x4F)
+void sendRightArrow() {
+    if (!isEncrypted) return; 
+    uint8_t pressMsg[8] = {0x00, 0x00, 0x4F, 0x00, 0x00, 0x00, 0x00, 0x00};
+    inputReport->setValue(pressMsg, sizeof(pressMsg)); inputReport->notify();
     delay(80); 
-    
-    // ⚠️ 极其关键：因为是普通按键，必须使用 inputReport！绝不能用 inputReportMedia！
-    inputReport->setValue(pressMsg, sizeof(pressMsg));
-    inputReport->notify();
-    
+    uint8_t releaseMsg[8] = {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
+    inputReport->setValue(releaseMsg, sizeof(releaseMsg)); inputReport->notify();
+}
+
+void sendZ() {
+    if (!isEncrypted) return; 
+    uint8_t pressMsg[8] = {0x00, 0x00, 0x1D, 0x00, 0x00, 0x00, 0x00, 0x00};
+    inputReport->setValue(pressMsg, sizeof(pressMsg)); inputReport->notify();
     delay(80); 
-    
-    // 释放信号全部置零
-    inputReport->setValue(releaseMsg, sizeof(releaseMsg));
-    inputReport->notify();
+    uint8_t releaseMsg[8] = {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
+    inputReport->setValue(releaseMsg, sizeof(releaseMsg)); inputReport->notify();
+}
+
+void sendX() {
+    if (!isEncrypted) return; 
+    uint8_t pressMsg[8] = {0x00, 0x00, 0x1B, 0x00, 0x00, 0x00, 0x00, 0x00};
+    inputReport->setValue(pressMsg, sizeof(pressMsg)); inputReport->notify();
+    delay(80); 
+    uint8_t releaseMsg[8] = {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
+    inputReport->setValue(releaseMsg, sizeof(releaseMsg)); inputReport->notify();
 }
 
 // ==========================================
-// 3. 蓝牙底层回调 (修复“断电失聪”的核心)
+// 蓝牙底层回调
 // ==========================================
-// 安全握手监听
 class MySecurityCallbacks : public BLESecurityCallbacks {
     uint32_t onPassKeyRequest() { return 123456; }
     void onPassKeyNotify(uint32_t pass_key) {}
     bool onConfirmPIN(uint32_t pass_key) { return true; }
     bool onSecurityRequest() { return true; }
-    
     void onAuthenticationComplete(esp_ble_auth_cmpl_t cmpl) {
         if (cmpl.success) {
             isEncrypted = true;
-            Serial.println("🔒 蓝牙加密链路已重建！(按键现已完全生效)");
+            Serial.println("🔒 加密链路已重建！");
         } else {
             isEncrypted = false;
-            Serial.println("❌ 蓝牙加密失败！请长按按键重置，并在手机端重新配对。");
         }
     }
 };
 
-// 物理连接监听
 class MyServerCallbacks : public BLEServerCallbacks {
     void onConnect(BLEServer* pServer) {
         isConnected = true;
-        Serial.println("🔗 物理链路已连接，正在强行唤醒 CCCD 通知描述符...");
-        
-        // 核心修复：强行打开键盘和多媒体通道的 CCCD (0x2902)
+        Serial.println("🔗 物理链路已连接");
         if (inputReport != NULL) {
             BLEDescriptor* pDesc = inputReport->getDescriptorByUUID(BLEUUID((uint16_t)0x2902));
-            if (pDesc) { uint8_t descVal[] = {0x01, 0x00}; pDesc->setValue(descVal, 2); }
-        }
-        if (inputReportMedia != NULL) {
-            BLEDescriptor* pDesc = inputReportMedia->getDescriptorByUUID(BLEUUID((uint16_t)0x2902));
             if (pDesc) { uint8_t descVal[] = {0x01, 0x00}; pDesc->setValue(descVal, 2); }
         }
     }
     void onDisconnect(BLEServer* pServer) {
         isConnected = false;
         isEncrypted = false;
-        Serial.println("❌ 主机已断开，重新开始广播...");
+        Serial.println("❌ 已断开");
         pServer->startAdvertising(); 
     }
 };
 
 // ==========================================
-// 4. 合并版描述符 (支持普通按键 + 多媒体按键)
+// HID 描述符 (键盘通道)
 // ==========================================
 const uint8_t hidReportMap[] = {
-    // --- 通道 1: 普通键盘 ---
-    0x05, 0x01,  // Usage Page (Generic Desktop)
-    0x09, 0x06,  // Usage (Keyboard)
-    0xA1, 0x01,  // Collection (Application)
-    0x85, 0x01,  //   Report Id (1)
-    0x05, 0x07,  //   Usage Page (Key Codes)
-    0x19, 0xE0,  //   Usage Minimum (224)
-    0x29, 0xE7,  //   Usage Maximum (231)
-    0x15, 0x00,  //   Logical Minimum (0)
-    0x25, 0x01,  //   Logical Maximum (1)
-    0x75, 0x01,  //   Report Size (1)
-    0x95, 0x08,  //   Report Count (8)
-    0x81, 0x02,  //   Input (Data, Variable, Absolute)
-    0x95, 0x01,  //   Report Count (1)
-    0x75, 0x08,  //   Report Size (8)
-    0x81, 0x01,  //   Input (Constant)
-    0x95, 0x06,  //   Report Count (6)
-    0x75, 0x08,  //   Report Size (8)
-    0x15, 0x00,  //   Logical Minimum (0)
-    0x25, 0x65,  //   Logical Maximum (101)
-    0x05, 0x07,  //   Usage Page (Key codes)
-    0x19, 0x00,  //   Usage Minimum (0)
-    0x29, 0x65,  //   Usage Maximum (101)
-    0x81, 0x00,  //   Input (Data, Array) 
-    0xC0,        // End Collection
-
-    // --- 通道 2: 多媒体控制 ---
-    0x05, 0x0C,  // Usage Page (Consumer)
-    0x09, 0x01,  // Usage (Consumer Control)
-    0xA1, 0x01,  // Collection (Application)
-    0x85, 0x02,  //   Report Id (2)
-    0x15, 0x00,  //   Logical minimum (0)
-    0x26, 0xFF, 0x03, // Logical maximum (0x3FF)
-    0x19, 0x00,  //   Usage Minimum (0)
-    0x2A, 0xFF, 0x03, // Usage Maximum (0x3FF)
-    0x75, 0x10,  //   Report Size (16) -> 2 bytes
-    0x95, 0x01,  //   Report Count (1)
-    0x81, 0x00,  //   Input (Data,Array,Absolute)
-    0xC0         // End Collection
+    0x05, 0x01, 0x09, 0x06, 0xA1, 0x01, 0x85, 0x01, 
+    0x05, 0x07, 0x19, 0xE0, 0x29, 0xE7, 0x15, 0x00, 
+    0x25, 0x01, 0x75, 0x01, 0x95, 0x08, 0x81, 0x02, 
+    0x95, 0x01, 0x75, 0x08, 0x81, 0x01, 0x95, 0x06, 
+    0x75, 0x08, 0x15, 0x00, 0x25, 0x65, 0x05, 0x07, 
+    0x19, 0x00, 0x29, 0x65, 0x81, 0x00, 0xC0         
 };
 
 // ==========================================
-// 初始化与主循环
+// 初始化
 // ==========================================
 void setup() {
     Serial.begin(115200);
-    pinMode(buttonPin, INPUT_PULLUP);
     
-    // 初始化 NVS，为了能存 LTK 密钥
+    pinMode(buttonPin, INPUT_PULLDOWN); 
+    pinMode(btnXPin, INPUT_PULLDOWN);
+
     esp_err_t ret = nvs_flash_init();
     if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
-        ESP_ERROR_CHECK(nvs_flash_erase());
-        ret = nvs_flash_init();
+        ESP_ERROR_CHECK(nvs_flash_erase()); ret = nvs_flash_init();
     }
     ESP_ERROR_CHECK(ret);
 
     BLEDevice::init("ESP32 Ultimate KB");
-    BLEDevice::setSecurityCallbacks(new MySecurityCallbacks()); // 注册安全监听
-
+    BLEDevice::setSecurityCallbacks(new MySecurityCallbacks()); 
     BLEServer *pServer = BLEDevice::createServer();
     pServer->setCallbacks(new MyServerCallbacks());
 
     hid = new BLEHIDDevice(pServer);
-    // 绑定描述符通道
-    inputReport = hid->inputReport(1);       // 对应 Report ID 1
-    inputReportMedia = hid->inputReport(2);  // 对应 Report ID 2
-
+    inputReport = hid->inputReport(1); 
     hid->manufacturer()->setValue("Espressif");
     hid->pnp(0x02, 0x0E8D, 0x0300, 0x0100);
     hid->hidInfo(0x00, 0x01);
@@ -227,11 +169,10 @@ void setup() {
     BLEAdvertising *pAdvertising = pServer->getAdvertising();
     pAdvertising->setAppearance(HID_KEYBOARD); 
     pAdvertising->addServiceUUID(hid->hidService()->getUUID());
-    pAdvertising->setMinPreferred(0x06); // 安卓防吞键参数
+    pAdvertising->setMinPreferred(0x06); 
     pAdvertising->setMaxPreferred(0x12); 
     pAdvertising->start();
 
-    // 核心安全级别：安全连接 + 绑定
     BLESecurity *pSecurity = new BLESecurity();
     pSecurity->setAuthenticationMode(ESP_LE_AUTH_REQ_SC_BOND); 
     pSecurity->setCapability(ESP_IO_CAP_NONE); 
@@ -242,46 +183,42 @@ void setup() {
     uint32_t passkey = 123456;
     esp_ble_gap_set_security_param(ESP_BLE_SM_SET_STATIC_PASSKEY, &passkey, sizeof(uint32_t));
 
-    Serial.println("🚀 究极版蓝牙键盘启动完毕，等待连接...");
+    Serial.println("🚀 蓝牙启动...");
 }
 
+// ==========================================
+// 主循环状态机
+// ==========================================
 void loop() {
-    // 按键逻辑：必须在连接且【加密成功】后才能触发
     if (isConnected) {
+        const unsigned long doubleClickWindow = 200; 
+        const unsigned long debounceDelay = 20;      
+
+        // --- 模块 1：主按键 (引脚 15, NC模式) ---
         int currentButtonState = digitalRead(buttonPin);
         static int lastButtonState = HIGH;
         static unsigned long lastDebounceTime = 0;
         
         static unsigned long pressStartTime = 0;
-        
-        // 🚨 核心升级：区分 1 秒长按和 3 秒长按的标志位
-        static bool oneSecPressHandled = false;
-        static bool threeSecPressHandled = false;
+        static bool shortPressHandled = false; 
+        static bool resetPressHandled = false; 
 
         static int clickCount = 0;             
         static unsigned long firstClickTime = 0; 
-        const unsigned long doubleClickWindow = 250; 
 
-        // 软件消抖
-        if (currentButtonState != lastButtonState) {
-            lastDebounceTime = millis();
-        }
+        if (currentButtonState != lastButtonState) lastDebounceTime = millis();
 
-        if ((millis() - lastDebounceTime) > 30) {
+        if ((millis() - lastDebounceTime) > debounceDelay) {
             static int stableButtonState = HIGH;
             if (currentButtonState != stableButtonState) {
                 stableButtonState = currentButtonState;
                 
-                // --- 按下瞬间 ---
                 if (stableButtonState == LOW) { 
                     pressStartTime = millis();
-                    oneSecPressHandled = false;   // 重置 1 秒标志
-                    threeSecPressHandled = false; // 重置 3 秒标志
-                } 
-                // --- 松开瞬间 ---
-                else {
-                    // 只有当 1 秒和 3 秒的长按都没有被触发过时，才判定为短按！
-                    if (pressStartTime > 0 && !oneSecPressHandled && !threeSecPressHandled) {
+                    shortPressHandled = false;   
+                    resetPressHandled = false; 
+                } else {
+                    if (pressStartTime > 0 && !shortPressHandled && !resetPressHandled) {
                         if (clickCount == 0) {
                             firstClickTime = millis();
                             clickCount = 1;
@@ -293,38 +230,95 @@ void loop() {
                 }
             }
 
-            // --- 保持按下状态：检测多级长按 ---
             if (stableButtonState == LOW && pressStartTime > 0) {
                 unsigned long pressDuration = millis() - pressStartTime;
-
-                // 1. 先检测是否达到 1 秒
-                if (pressDuration > doubleClickWindow && !oneSecPressHandled) {
-                    Serial.println("👆 长按1秒触发 -> 方向上键 (Keyboard: 0x52)");
+                
+                if (pressDuration > 250 && !shortPressHandled) {
+                    Serial.println("👆 主键长按 -> 方向上 (0x52)");
                     sendUpArrow();
-                    oneSecPressHandled = true; // 标记 1 秒动作已执行
+                    shortPressHandled = true; 
                 }
                 
-                // 2. 继续按压，检测是否达到 3 秒
-                if (pressDuration > 3000 && !threeSecPressHandled) {
+                if (pressDuration > 3000 && !resetPressHandled) {
                     clearAllBondedDevices();
-                    threeSecPressHandled = true; // 标记 3 秒动作已执行
+                    resetPressHandled = true; 
                 }
             }
         }
         lastButtonState = currentButtonState;
 
-        // --- 执行短按与双击（只在加密链路通畅时执行） ---
         if (clickCount > 0 && pressStartTime == 0) {
             if (clickCount == 2) {
-                Serial.println("👇 双击触发 -> 空格键 (Keyboard: 0x2C)");
-                sendSpace(); // 调用你之前写的发空格函数
+                Serial.println("👇 主键双击 -> 字母 Z (0x1D)");
+                sendZ();
                 clickCount = 0; 
             } 
             else if (millis() - firstClickTime > doubleClickWindow) {
-                Serial.println("👇 单击触发 -> 方向下键 (Keyboard: 0x51)");
+                Serial.println("👇 主键单击 -> 方向下 (0x51)");
                 sendDownArrow();
                 clickCount = 0; 
             }
         }
+
+        // --- 模块 2：辅助按键 X (引脚 1, NO 模式 + 连发逻辑) ---
+        int currentBtnXState = digitalRead(btnXPin);
+        static int lastBtnXState = LOW;
+        static unsigned long lastBtnXDebounceTime = 0;
+        static int stableBtnXState = LOW;
+
+        if (currentBtnXState != lastBtnXState) lastBtnXDebounceTime = millis();
+        if ((millis() - lastBtnXDebounceTime) > debounceDelay) {
+            stableBtnXState = currentBtnXState;
+        }
+        lastBtnXState = currentBtnXState;
+
+        static unsigned long btnXPressStartTime = 0;
+        static unsigned long lastAutoFireTime = 0;
+        static bool xLongPressActive = false; // 记录是否触发了长按连发
+
+        if (stableBtnXState == HIGH) {
+            // 按下瞬间
+            if (btnXPressStartTime == 0) {
+                btnXPressStartTime = millis();
+                xLongPressActive = false;
+                lastAutoFireTime = millis(); // 初始化连发计时器
+            } 
+            // 持续按压中
+            else {
+                unsigned long heldTime = millis() - btnXPressStartTime;
+                if (heldTime >= 250) { // 长按超过 250ms
+                    xLongPressActive = true; 
+                    // 每间隔 800ms 触发一次方向右键
+                    if (millis() - lastAutoFireTime >= 800) {
+                        Serial.println("👉 X键连发 -> 方向右 (0x4F)");
+                        sendRightArrow();
+                        lastAutoFireTime = millis(); // 重置下次触发时间
+                    }
+                }
+            }
+        } else {
+            // 松开瞬间
+            if (btnXPressStartTime > 0) {
+                // 如果松开时没有触发过长按连发，说明是短按，发送一次 X
+                if (!xLongPressActive) {
+                    Serial.println("✖️ X键短按 -> 字母 X (0x1B)");
+                    sendX();
+                }
+                // 彻底重置状态
+                btnXPressStartTime = 0;
+                xLongPressActive = false;
+            }
+        }
+
+    } else {
+        // 断网状态下的重置依然保留
+        if (digitalRead(buttonPin) == LOW) {
+            delay(3000);
+            if (digitalRead(buttonPin) == LOW) {
+                clearAllBondedDevices();
+                while(digitalRead(buttonPin) == LOW) { delay(10); } 
+            }
+        }
     }
+    delay(10); 
 }
